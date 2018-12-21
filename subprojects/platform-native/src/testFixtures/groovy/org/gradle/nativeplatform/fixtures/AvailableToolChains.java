@@ -603,6 +603,7 @@ public class AvailableToolChains {
             super(family, version);
             this.cygwin32Path = cygwin32Path;
             this.cygwin64Path = cygwin64Path;
+            inPath(cygwin32Path, cygwin64Path);
         }
 
         @Override
