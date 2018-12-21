@@ -607,13 +607,13 @@ public class AvailableToolChains {
 
         @Override
         public String getBuildScriptConfig() {
-            String config = String.format("%s32(%s) {\n", getId(), getImplementationClass());
+            String config = String.format("%s_32(%s) {\n", getId(), getImplementationClass());
             config += String.format("path file('%s')\n", getId(), cygwin32Path.toURI());
-            config += "targets = ['x86']";
+            config += "targets = ['windows_x86']";
             config += "}\n";
-            config += String.format("%s64(%s) {\n", getId(), getImplementationClass());
+            config += String.format("%s_64(%s) {\n", getId(), getImplementationClass());
             config += String.format("path file('%s')\n", getId(), cygwin64Path.toURI());
-            config += "targets = ['x86_64']";
+            config += "targets = ['windows_x86_64']";
             config += "}\n";
             return config;
         }
