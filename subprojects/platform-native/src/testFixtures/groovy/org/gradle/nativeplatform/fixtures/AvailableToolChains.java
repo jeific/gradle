@@ -608,11 +608,11 @@ public class AvailableToolChains {
         @Override
         public String getBuildScriptConfig() {
             String config = String.format("%s_32(%s) {\n", getId(), getImplementationClass());
-            config += String.format("path file('%s')\n", getId(), cygwin32Path.toURI());
+            config += String.format("path file('%s')\n", cygwin32Path.toURI());
             config += "targets = ['windows_x86']";
             config += "}\n";
             config += String.format("%s_64(%s) {\n", getId(), getImplementationClass());
-            config += String.format("path file('%s')\n", getId(), cygwin64Path.toURI());
+            config += String.format("path file('%s')\n", cygwin64Path.toURI());
             config += "targets = ['windows_x86_64']";
             config += "}\n";
             return config;
