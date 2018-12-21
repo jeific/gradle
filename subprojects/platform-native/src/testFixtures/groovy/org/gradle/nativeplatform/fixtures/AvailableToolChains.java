@@ -297,7 +297,7 @@ public class AvailableToolChains {
         VISUAL_CPP("visual c++"),
         MINGW_GCC("mingw"),
         CYGWIN_GCC("gcc cygwin"),
-        CYGWIN_GCC_64("gcc cygwin64"),
+        CYGWIN_GCC_64("gcc cygwin"),
         SWIFTC("swiftc");
 
         private final String displayName;
