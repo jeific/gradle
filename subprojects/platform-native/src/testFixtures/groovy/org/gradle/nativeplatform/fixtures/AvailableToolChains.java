@@ -199,13 +199,19 @@ public class AvailableToolChains {
     }
 
     static private ToolChainCandidate findCygwin() {
-        // Search in the standard installation locations
-        File compilerExe = new File("C:/cygwin64/bin/g++.exe");
-        if (compilerExe.isFile()) {
-            return new InstalledWindowsGcc(ToolFamily.CYGWIN_GCC_64, VersionNumber.UNKNOWN).inPath(compilerExe.getParentFile());
+        // Search in the standard installation locations and construct
+        File compiler64Exe = new File("C:/cygwin64/bin/g++.exe");
+        if (compiler64Exe.isFile()) {
+            File compiler32Exe = new File("C:/cygwin/bin/g++.exe");
+            if (compiler32Exe.isFile()) {
+                return new InstalledCygwinGcc64(ToolFamily.CYGWIN_GCC_64, VersionNumber.UNKNOWN, compiler64Exe.getParentFile(), compiler32Exe.getParentFile());
+            } else {
+                return new UnavailableToolChain(ToolFamily.CYGWIN_GCC);
+            }
         }
 
-        compilerExe = new File("C:/cygwin/bin/g++.exe");
+        // Fall back to just 32-bit toolchain if available
+        File compilerExe = new File("C:/cygwin/bin/g++.exe");
         if (compilerExe.isFile()) {
             return new InstalledWindowsGcc(ToolFamily.CYGWIN_GCC, VersionNumber.UNKNOWN).inPath(compilerExe.getParentFile());
         }
@@ -586,6 +592,30 @@ public class AvailableToolChains {
         @Override
         public String getId() {
             return getDisplayName().replaceAll("\\W", "");
+        }
+    }
+
+    public static class InstalledCygwinGcc64 extends InstalledWindowsGcc {
+        private final File cygwin32Path;
+        private final File cygwin64Path;
+
+        public InstalledCygwinGcc64(ToolFamily family, VersionNumber version, File cygwin32Path, File cygwin64Path) {
+            super(family, version);
+            this.cygwin32Path = cygwin32Path;
+            this.cygwin64Path = cygwin64Path;
+        }
+
+        @Override
+        public String getBuildScriptConfig() {
+            String config = String.format("%s32(%s) {\n", getId(), getImplementationClass());
+            config += String.format("path file('%s')\n", getId(), cygwin32Path.toURI());
+            config += "targets = ['x86']";
+            config += "}\n";
+            config += String.format("%s64(%s) {\n", getId(), getImplementationClass());
+            config += String.format("path file('%s')\n", getId(), cygwin64Path.toURI());
+            config += "targets = ['x86_64']";
+            config += "}\n";
+            return config;
         }
     }
 
