@@ -144,7 +144,7 @@ public class AsmBackedClassGeneratorTest {
     }
 
     @Test
-    public void mixesInImplementationForExtensionAwareMethodsWhenTypeIsAbstract() throws Exception {
+    public void mixesInImplementationForExtensionAwareMethodsWhenGetterIsAbstract() throws Exception {
         AbstractExtensibleBean bean = newInstance(AbstractExtensibleBean.class);
         assertTrue(bean instanceof DynamicObjectAware);
         assertTrue(bean instanceof IConventionAware);
@@ -155,6 +155,56 @@ public class AsmBackedClassGeneratorTest {
 
         DynamicObjectAware dynamicBean = (DynamicObjectAware) bean;
         assertTrue(dynamicBean.getAsDynamicObject().getProperty("nested") == extension);
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToMethodsOfExtensionAware() {
+        try {
+            generator.generate(BadlyFormedExtensibleBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot use @Inject annotation on method BadlyFormedExtensibleBean.getExtensions().", e.getCause().getMessage());
+        }
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToFinalMethod() {
+        try {
+            generator.generate(FinalInjectBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot attach @Inject to method FinalInjectBean.getThing() as it is final.", e.getCause().getMessage());
+        }
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToStaticMethod() {
+        try {
+            generator.generate(StaticInjectBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot attach @Inject to method StaticInjectBean.getThing() as it is static.", e.getCause().getMessage());
+        }
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToPrivateMethod() {
+        try {
+            generator.generate(PrivateInjectBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot attach @Inject to method PrivateInjectBean.getThing() as it is not public or protected.", e.getCause().getMessage());
+        }
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToNonGetterMethod() {
+        try {
+            generator.generate(NonGetterInjectBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot attach @Inject to method NonGetterInjectBean.thing() as it is not a property getter.", e.getCause().getMessage());
+        }
     }
 
     @Test
@@ -1445,10 +1495,45 @@ public class AsmBackedClassGeneratorTest {
     public static abstract class AbstractExtensibleBean implements ExtensionAware {
     }
 
+    public static class BadlyFormedExtensibleBean implements ExtensionAware {
+        @Override @Inject
+        public ExtensionContainer getExtensions() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
     public static final class FinalBean {
     }
 
     private static class PrivateBean {
+    }
+
+    public static class FinalInjectBean {
+        @Inject
+        final Number getThing() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    public static class PrivateInjectBean {
+        @Inject
+        private Number getThing() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    public static class NonGetterInjectBean {
+        @Inject
+        Number thing() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    public static class StaticInjectBean {
+        @Inject
+        static Number getThing() {
+            throw new UnsupportedOperationException();
+        }
     }
 
     public static abstract class AbstractMethodBean {

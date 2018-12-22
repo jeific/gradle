@@ -137,7 +137,9 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             throw new ClassGenerationException(String.format("Cannot create a decorated class for final class '%s'.",
                 type.getSimpleName()));
         }
-        return new ClassBuilderImpl<T>(type, classMetaData, decorate);
+        ClassBuilderImpl<T> builder = new ClassBuilderImpl<T>(type, classMetaData, decorate);
+        builder.startClass();
+        return builder;
     }
 
     private static class ClassBuilderImpl<T> implements ClassBuilder<T> {
@@ -1173,10 +1175,6 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
 
         public NoOpBuilder(Class<T> type) {
             this.type = type;
-        }
-
-        @Override
-        public void startClass() {
         }
 
         @Override
