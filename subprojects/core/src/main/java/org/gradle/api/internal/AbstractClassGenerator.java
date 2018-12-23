@@ -31,6 +31,7 @@ import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.internal.reflect.ClassDetails;
 import org.gradle.internal.reflect.ClassInspector;
+import org.gradle.internal.reflect.JavaReflectionUtil;
 import org.gradle.internal.reflect.PropertyAccessorType;
 import org.gradle.internal.reflect.PropertyDetails;
 import org.gradle.internal.service.ServiceRegistry;
@@ -42,10 +43,8 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,18 +57,19 @@ import java.util.concurrent.locks.ReentrantLock;
  * Generates a subclass of the target class to mix-in some DSL behaviour.
  *
  * <ul>
- *     <li>For each property, a convention mapping is applied. These properties may have a setter method.</li>
- *     <li>For each property whose getter is annotated with {@code Inject}, a service instance will be injected instead. These properties may have a setter method.</li>
- *     <li>For each mutable property as set method is generated.</li>
- *     <li>For each method whose last parameter is an {@link org.gradle.api.Action}, an override is generated that accepts a {@link groovy.lang.Closure} instead.</li>
- *     <li>Coercion from string to enum property is mixed in.</li>
- *     <li>{@link groovy.lang.GroovyObject} is mixed in to the class.</li>
+ * <li>For each property, a convention mapping is applied. These properties may have a setter method.</li>
+ * <li>For each property whose getter is annotated with {@code Inject}, a service instance will be injected instead. These properties may have a setter method and may be abstract.</li>
+ * <li>For each mutable property as set method is generated.</li>
+ * <li>For each method whose last parameter is an {@link org.gradle.api.Action}, an override is generated that accepts a {@link groovy.lang.Closure} instead.</li>
+ * <li>Coercion from string to enum property is mixed in.</li>
+ * <li>{@link groovy.lang.GroovyObject} and {@link DynamicObjectAware} is mixed in to the class.</li>
+ * <li>An {@link ExtensionAware} implementation is added, unless {@link NonExtensible} is attached to the class.</li>
+ * <li>An {@link IConventionAware} implementation is added, unless {@link NoConventionMapping} is attached to the class.</li>
  * </ul>
  */
 public abstract class AbstractClassGenerator implements ClassGenerator {
     private static final Map<Class<?>, Map<Class<?>, Class<?>>> GENERATED_CLASSES = new HashMap<Class<?>, Map<Class<?>, Class<?>>>();
     private static final Lock CACHE_LOCK = new ReentrantLock();
-    private static final Collection<String> SKIP_PROPERTIES = Arrays.asList("class", "metaClass", "conventionMapping", "convention", "asDynamicObject");
 
     public <T> Class<? extends T> generate(Class<T> type) {
         CACHE_LOCK.lock();
@@ -96,67 +96,28 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         Class<?> subclass;
         try {
-            ClassInspectionVisitor classInspector = start(type);
+            ClassInspectionVisitor inspectionVisitor = start(type);
+
             ServiceInjectionPropertyHandler injectionHandler = new ServiceInjectionPropertyHandler();
             PropertyTypePropertyHandler propertyTypedHandler = new PropertyTypePropertyHandler();
             ExtensibleTypePropertyHandler extensionHandler = new ExtensibleTypePropertyHandler();
             DslMixInPropertyType dslMixInHandler = new DslMixInPropertyType();
             // Order is significant. Injection handler should be at the end
-            List<PropertyHandler> handlers = ImmutableList.of(extensionHandler, propertyTypedHandler, dslMixInHandler, injectionHandler);
-            List<PropertyMetaData> unclaimedProperties = new ArrayList<PropertyMetaData>();
-            ClassMetaData classMetaData = inspectType(type, handlers, unclaimedProperties);
+            List<PropertyHandler> handlers = ImmutableList.of(extensionHandler, dslMixInHandler, propertyTypedHandler, injectionHandler);
+            ClassMetaData classMetaData = inspectType(type, handlers, extensionHandler);
             for (PropertyHandler handler : handlers) {
-                handler.applyTo(classInspector);
+                handler.applyTo(inspectionVisitor);
             }
 
-            ClassGenerationVisitor builder = classInspector.builder();
-
-            Class noMappingClass = Object.class;
-            for (Class<?> c = type; c != null && noMappingClass == Object.class; c = c.getSuperclass()) {
-                if (c.getAnnotation(NoConventionMapping.class) != null) {
-                    noMappingClass = c;
-                }
-            }
+            ClassGenerationVisitor generationVisitor = inspectionVisitor.builder();
 
             for (PropertyHandler handler : handlers) {
-                handler.applyTo(builder);
-            }
-
-            Set<PropertyMetaData> conventionProperties = new HashSet<PropertyMetaData>();
-
-            for (PropertyMetaData property : unclaimedProperties) {
-                if (SKIP_PROPERTIES.contains(property.name)) {
-                    continue;
-                }
-
-                // TODO - extract more
-
-                boolean needsConventionMapping = false;
-                if (extensionHandler.extensible) {
-                    for (Method getter : property.getOverridableGetters()) {
-                        if (!getter.getDeclaringClass().isAssignableFrom(noMappingClass)) {
-                            needsConventionMapping = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (needsConventionMapping) {
-                    conventionProperties.add(property);
-                    builder.addConventionProperty(property);
-                    for (Method getter : property.getOverridableGetters()) {
-                        builder.applyConventionMappingToGetter(property, getter);
-                    }
-
-                    for (Method setter : property.getOverridableSetters()) {
-                        builder.applyConventionMappingToSetter(property, setter);
-                    }
-                }
+                handler.applyTo(generationVisitor);
             }
 
             Set<Method> actionMethods = classMetaData.missingOverloads;
             for (Method method : actionMethods) {
-                builder.addActionMethod(method);
+                generationVisitor.addActionMethod(method);
             }
 
             // Adds a set method for each mutable property
@@ -171,22 +132,22 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
                 if (property.setMethods.isEmpty()) {
                     for (Method setter : property.setters) {
-                        builder.addSetMethod(property, setter);
+                        generationVisitor.addSetMethod(property, setter);
                     }
-                } else if (conventionProperties.contains(property)) {
+                } else if (extensionHandler.conventionProperties.contains(property)) {
                     for (Method setMethod : property.setMethods) {
-                        builder.applyConventionMappingToSetMethod(property, setMethod);
+                        generationVisitor.applyConventionMappingToSetMethod(property, setMethod);
                     }
                 }
             }
 
             for (Constructor<?> constructor : type.getConstructors()) {
                 if (Modifier.isPublic(constructor.getModifiers())) {
-                    builder.addConstructor(constructor);
+                    generationVisitor.addConstructor(constructor);
                 }
             }
 
-            subclass = builder.generate();
+            subclass = generationVisitor.generate();
         } catch (ClassGenerationException e) {
             throw e;
         } catch (Throwable e) {
@@ -200,9 +161,9 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
     protected abstract ClassInspectionVisitor start(Class<?> type);
 
-    private ClassMetaData inspectType(Class<?> type, List<PropertyHandler> propertyHandlers, List<PropertyMetaData> unclaimedProperties) {
+    private ClassMetaData inspectType(Class<?> type, List<PropertyHandler> propertyHandlers, PropertyHandler defaultHandler) {
         ClassMetaData classMetaData = new ClassMetaData();
-        inspectType(type, classMetaData, propertyHandlers, unclaimedProperties);
+        inspectType(type, classMetaData, propertyHandlers, defaultHandler);
         attachSetMethods(classMetaData);
         findMissingClosureOverloads(classMetaData);
         classMetaData.complete();
@@ -246,7 +207,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         }
     }
 
-    private void inspectType(Class<?> type, ClassMetaData classMetaData, List<PropertyHandler> propertyHandlers, List<PropertyMetaData> unclaimedProperties) {
+    private void inspectType(Class<?> type, ClassMetaData classMetaData, List<PropertyHandler> propertyHandlers, PropertyHandler defaultHandler) {
         for (PropertyHandler propertyHandler : propertyHandlers) {
             propertyHandler.inspectType(type);
         }
@@ -279,7 +240,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
             if (ownedBy != null) {
                 continue;
             }
-            unclaimedProperties.add(propertyMetaData);
+            defaultHandler.unclaimed(propertyMetaData);
             for (Method method : property.getGetters()) {
                 if (!method.getDeclaringClass().equals(ExtensionAware.class)) {
                     assertNotAbstract(type, method);
@@ -353,11 +314,6 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         public void actionMethodRequiresOverload(Method method) {
             missingOverloads.add(method);
-        }
-
-        public boolean providesDynamicObjectImplementation() {
-            PropertyMetaData property = properties.get("asDynamicObject");
-            return property != null && property.isReadable();
         }
     }
 
@@ -459,8 +415,12 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         void applyTo(ClassGenerationVisitor visitor) {
         }
 
-        void ambiguous(PropertyMetaData propertyMetaData) {
-            throw new UnsupportedOperationException("Multiple matches for " + propertyMetaData.getName());
+        void ambiguous(PropertyMetaData property) {
+            throw new UnsupportedOperationException("Multiple matches for " + property.getName());
+        }
+
+        public void unclaimed(PropertyMetaData property) {
+            throw new UnsupportedOperationException("No match for " + property.getName());
         }
     }
 
@@ -505,29 +465,55 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
     private static class ExtensibleTypePropertyHandler extends PropertyHandler {
         private Class<?> type;
+        private Class<?> noMappingClass;
         private boolean conventionAware;
         private boolean extensible;
         private boolean hasExtensionAwareImplementation;
+        private final List<PropertyMetaData> conventionProperties = new ArrayList<PropertyMetaData>();
 
         @Override
         void inspectType(Class<?> type) {
-            extensible = type.getAnnotation(NonExtensible.class) == null;
-            conventionAware = extensible && type.getAnnotation(NoConventionMapping.class) == null;
             this.type = type;
+            extensible = JavaReflectionUtil.getAnnotation(type, NonExtensible.class) == null;
+
+            noMappingClass = Object.class;
+            for (Class<?> c = type; c != null && noMappingClass == Object.class; c = c.getSuperclass()) {
+                if (c.getAnnotation(NoConventionMapping.class) != null) {
+                    noMappingClass = c;
+                }
+            }
+
+            conventionAware = extensible && noMappingClass != type;
         }
 
         @Override
         boolean claimProperty(PropertyMetaData property) {
-            if (extensible && property.getName().equals("extensions")) {
-                for (Method getter : property.getOverridableGetters()) {
-                    if (Modifier.isAbstract(getter.getModifiers())) {
-                        return true;
+            if (extensible) {
+                if (property.getName().equals("extensions")) {
+                    for (Method getter : property.getOverridableGetters()) {
+                        if (Modifier.isAbstract(getter.getModifiers())) {
+                            return true;
+                        }
                     }
+                    hasExtensionAwareImplementation = true;
+                    return true;
                 }
-                hasExtensionAwareImplementation = true;
-                return true;
+                if (property.getName().equals("conventionMapping") || property.getName().equals("convention")) {
+                    return true;
+                }
             }
+
             return false;
+        }
+
+        @Override
+        public void unclaimed(PropertyMetaData property) {
+            for (Method getter : property.getOverridableGetters()) {
+                if (!getter.getDeclaringClass().isAssignableFrom(noMappingClass)) {
+                    conventionProperties.add(property);
+                    break;
+                }
+            }
         }
 
         @Override
@@ -547,6 +533,15 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
             }
             if (conventionAware && !IConventionAware.class.isAssignableFrom(type)) {
                 visitor.mixInConventionAware();
+            }
+            for (PropertyMetaData property : conventionProperties) {
+                visitor.addConventionProperty(property);
+                for (Method getter : property.getOverridableGetters()) {
+                    visitor.applyConventionMappingToGetter(property, getter);
+                }
+                for (Method setter : property.getOverridableSetters()) {
+                    visitor.applyConventionMappingToSetter(property, setter);
+                }
             }
         }
     }
@@ -572,8 +567,8 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         private boolean isModelProperty(PropertyMetaData property) {
             return Property.class.isAssignableFrom(property.getType()) ||
-                HasMultipleValues.class.isAssignableFrom(property.getType()) ||
-                MapProperty.class.isAssignableFrom(property.getType());
+                    HasMultipleValues.class.isAssignableFrom(property.getType()) ||
+                    MapProperty.class.isAssignableFrom(property.getType());
         }
     }
 
@@ -615,13 +610,13 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         }
 
         @Override
-        void ambiguous(PropertyMetaData propertyMetaData) {
-            for (Method method : propertyMetaData.getters) {
+        void ambiguous(PropertyMetaData property) {
+            for (Method method : property.getters) {
                 if (method.getAnnotation(Inject.class) != null) {
                     throw new IllegalArgumentException(String.format("Cannot use @Inject annotation on method %s.%s().", method.getDeclaringClass().getSimpleName(), method.getName()));
                 }
             }
-            super.ambiguous(propertyMetaData);
+            super.ambiguous(property);
         }
 
         @Override
@@ -682,7 +677,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         void addConventionProperty(PropertyMetaData property);
 
-        void applyConventionMappingToGetter(PropertyMetaData property, Method getter) throws Exception;
+        void applyConventionMappingToGetter(PropertyMetaData property, Method getter);
 
         void applyConventionMappingToSetter(PropertyMetaData property, Method setter);
 

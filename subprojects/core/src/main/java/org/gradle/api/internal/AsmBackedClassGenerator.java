@@ -235,6 +235,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
 
         private static final String RETURN_VOID_FROM_OBJECT = Type.getMethodDescriptor(Type.VOID_TYPE, OBJECT_TYPE);
         private static final String RETURN_VOID_FROM_OBJECT_CLASS_DYNAMIC_OBJECT_INSTANTIATOR = Type.getMethodDescriptor(Type.VOID_TYPE, OBJECT_TYPE, CLASS_TYPE, DYNAMIC_OBJECT_TYPE, INSTANTIATOR_TYPE);
+        private static final String RETURN_OBJECT_FROM_STRING_OBJECT_BOOLEAN = Type.getMethodDescriptor(OBJECT_TYPE, OBJECT_TYPE, STRING_TYPE, Type.BOOLEAN_TYPE);
         private static final String RETURN_CLASS = Type.getMethodDescriptor(CLASS_TYPE);
         private static final String RETURN_VOID_FROM_CONVENTION_AWARE_CONVENTION = Type.getMethodDescriptor(Type.VOID_TYPE, CONVENTION_AWARE_TYPE, CONVENTION_TYPE);
         private static final String RETURN_CONVENTION = Type.getMethodDescriptor(CONVENTION_TYPE);
@@ -844,7 +845,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             return "__" + property.getName() + "__";
         }
 
-        public void applyConventionMappingToGetter(PropertyMetaData property, Method getter) throws Exception {
+        public void applyConventionMappingToGetter(PropertyMetaData property, Method getter) {
             if (!conventionAware) {
                 return;
             }
@@ -891,9 +892,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             methodVisitor.visitFieldInsn(Opcodes.GETFIELD, generatedType.getInternalName(), flagName,
                 Type.BOOLEAN_TYPE.getDescriptor());
 
-            String getConventionValueDesc = Type.getMethodDescriptor(ConventionMapping.class.getMethod(
-                "getConventionValue", Object.class, String.class, Boolean.TYPE));
-            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, CONVENTION_MAPPING_TYPE.getInternalName(), "getConventionValue", getConventionValueDesc, true);
+            methodVisitor.visitMethodInsn(Opcodes.INVOKEINTERFACE, CONVENTION_MAPPING_TYPE.getInternalName(), "getConventionValue", RETURN_OBJECT_FROM_STRING_OBJECT_BOOLEAN, true);
 
             if (getter.getReturnType().isPrimitive()) {
                 // Unbox value
