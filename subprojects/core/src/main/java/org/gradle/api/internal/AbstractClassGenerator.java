@@ -31,7 +31,6 @@ import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.internal.reflect.ClassDetails;
 import org.gradle.internal.reflect.ClassInspector;
-import org.gradle.internal.reflect.JavaReflectionUtil;
 import org.gradle.internal.reflect.PropertyAccessorType;
 import org.gradle.internal.reflect.PropertyDetails;
 import org.gradle.internal.service.ServiceRegistry;
@@ -99,28 +98,18 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         try {
             ClassInspectionVisitor classInspector = start(type);
             ServiceInjectionPropertyHandler injectionHandler = new ServiceInjectionPropertyHandler();
-            ExtensionAwarePropertyHandler extensionHandler = new ExtensionAwarePropertyHandler();
             PropertyTypePropertyHandler propertyTypedHandler = new PropertyTypePropertyHandler();
+            ExtensibleTypePropertyHandler extensionHandler = new ExtensibleTypePropertyHandler();
+            DslMixInPropertyType dslMixInHandler = new DslMixInPropertyType();
             // Order is significant. Injection handler should be at the end
-            List<PropertyHandler> handlers = ImmutableList.of(extensionHandler, propertyTypedHandler, injectionHandler);
+            List<PropertyHandler> handlers = ImmutableList.of(extensionHandler, propertyTypedHandler, dslMixInHandler, injectionHandler);
             List<PropertyMetaData> unclaimedProperties = new ArrayList<PropertyMetaData>();
             ClassMetaData classMetaData = inspectType(type, handlers, unclaimedProperties);
             for (PropertyHandler handler : handlers) {
                 handler.applyTo(classInspector);
             }
 
-            ClassGenerationVisitor builder = classInspector.builder(classMetaData);
-
-            if (!DynamicObjectAware.class.isAssignableFrom(type)) {
-                builder.mixInDynamicAware();
-            }
-            if (!GroovyObject.class.isAssignableFrom(type)) {
-                builder.mixInGroovyObject();
-            }
-            builder.addDynamicMethods();
-            if (classMetaData.conventionAware && !IConventionAware.class.isAssignableFrom(type)) {
-                builder.mixInConventionAware();
-            }
+            ClassGenerationVisitor builder = classInspector.builder();
 
             Class noMappingClass = Object.class;
             for (Class<?> c = type; c != null && noMappingClass == Object.class; c = c.getSuperclass()) {
@@ -143,7 +132,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
                 // TODO - extract more
 
                 boolean needsConventionMapping = false;
-                if (classMetaData.extensible) {
+                if (extensionHandler.extensible) {
                     for (Method getter : property.getOverridableGetters()) {
                         if (!getter.getDeclaringClass().isAssignableFrom(noMappingClass)) {
                             needsConventionMapping = true;
@@ -212,10 +201,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
     protected abstract ClassInspectionVisitor start(Class<?> type);
 
     private ClassMetaData inspectType(Class<?> type, List<PropertyHandler> propertyHandlers, List<PropertyMetaData> unclaimedProperties) {
-        boolean isConventionAware = type.getAnnotation(NoConventionMapping.class) == null;
-        boolean extensible = JavaReflectionUtil.getAnnotation(type, NonExtensible.class) == null;
-
-        ClassMetaData classMetaData = new ClassMetaData(extensible, isConventionAware);
+        ClassMetaData classMetaData = new ClassMetaData();
         inspectType(type, classMetaData, propertyHandlers, unclaimedProperties);
         attachSetMethods(classMetaData);
         findMissingClosureOverloads(classMetaData);
@@ -262,7 +248,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
     private void inspectType(Class<?> type, ClassMetaData classMetaData, List<PropertyHandler> propertyHandlers, List<PropertyMetaData> unclaimedProperties) {
         for (PropertyHandler propertyHandler : propertyHandlers) {
-            propertyHandler.inspectType(classMetaData);
+            propertyHandler.inspectType(type);
         }
         ClassDetails classDetails = ClassInspector.inspect(type);
         for (Method method : classDetails.getAllMethods()) {
@@ -325,20 +311,13 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         // Else, ignore abstract methods on non-abstract classes as some other tooling (e.g. the Groovy compiler) has decided this is ok
     }
 
-    protected static class ClassMetaData {
+    private static class ClassMetaData {
         private final Map<String, PropertyMetaData> properties = new LinkedHashMap<String, PropertyMetaData>();
         private final Set<Method> missingOverloads = new LinkedHashSet<Method>();
-        private final boolean extensible;
-        private final boolean conventionAware;
 
         private List<Method> actionMethods = new ArrayList<Method>();
         private SetMultimap<String, Method> closureMethods = LinkedHashMultimap.create();
         private List<Method> setMethods = new ArrayList<Method>();
-
-        public ClassMetaData(boolean extensible, boolean conventionAware) {
-            this.extensible = extensible;
-            this.conventionAware = conventionAware;
-        }
 
         @Nullable
         public PropertyMetaData getProperty(String name) {
@@ -379,10 +358,6 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         public boolean providesDynamicObjectImplementation() {
             PropertyMetaData property = properties.get("asDynamicObject");
             return property != null && property.isReadable();
-        }
-
-        public boolean isConventionAware() {
-            return conventionAware;
         }
     }
 
@@ -464,7 +439,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
     }
 
     private static class PropertyHandler {
-        void inspectType(ClassMetaData classMetaData) {
+        void inspectType(Class<?> type) {
         }
 
         void validateMethod(Method method) {
@@ -481,7 +456,7 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         void applyTo(ClassInspectionVisitor visitor) {
         }
 
-        void applyTo(ClassGenerationVisitor builder) {
+        void applyTo(ClassGenerationVisitor visitor) {
         }
 
         void ambiguous(PropertyMetaData propertyMetaData) {
@@ -489,18 +464,61 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         }
     }
 
-    private static class ExtensionAwarePropertyHandler extends PropertyHandler {
-        private boolean hasExtensionAwareImplementation;
-        private ClassMetaData classMetaData;
+    private static class DslMixInPropertyType extends PropertyHandler {
+        private boolean providesOwnDynamicObject;
+        private boolean needDynamicAware;
+        private boolean needGroovyObject;
 
         @Override
-        void inspectType(ClassMetaData classMetaData) {
-            this.classMetaData = classMetaData;
+        void inspectType(Class<?> type) {
+            needDynamicAware = !DynamicObjectAware.class.isAssignableFrom(type);
+            needGroovyObject = !GroovyObject.class.isAssignableFrom(type);
         }
 
         @Override
         boolean claimProperty(PropertyMetaData property) {
-            if (property.getName().equals("extensions")) {
+            if (property.getName().equals("asDynamicObject")) {
+                providesOwnDynamicObject = true;
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        void applyTo(ClassInspectionVisitor visitor) {
+            if (providesOwnDynamicObject) {
+                visitor.providesOwnDynamicObjectImplementation();
+            }
+        }
+
+        @Override
+        void applyTo(ClassGenerationVisitor visitor) {
+            if (needDynamicAware) {
+                visitor.mixInDynamicAware();
+            }
+            if (needGroovyObject) {
+                visitor.mixInGroovyObject();
+            }
+            visitor.addDynamicMethods();
+        }
+    }
+
+    private static class ExtensibleTypePropertyHandler extends PropertyHandler {
+        private Class<?> type;
+        private boolean conventionAware;
+        private boolean extensible;
+        private boolean hasExtensionAwareImplementation;
+
+        @Override
+        void inspectType(Class<?> type) {
+            extensible = type.getAnnotation(NonExtensible.class) == null;
+            conventionAware = extensible && type.getAnnotation(NoConventionMapping.class) == null;
+            this.type = type;
+        }
+
+        @Override
+        boolean claimProperty(PropertyMetaData property) {
+            if (extensible && property.getName().equals("extensions")) {
                 for (Method getter : property.getOverridableGetters()) {
                     if (Modifier.isAbstract(getter.getModifiers())) {
                         return true;
@@ -514,8 +532,21 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         @Override
         void applyTo(ClassInspectionVisitor visitor) {
-            if (classMetaData.extensible) {
+            if (extensible) {
                 visitor.mixInExtensible();
+            }
+            if (conventionAware) {
+                visitor.mixInConventionAware();
+            }
+        }
+
+        @Override
+        void applyTo(ClassGenerationVisitor visitor) {
+            if (extensible && !hasExtensionAwareImplementation) {
+                visitor.addExtensionsProperty();
+            }
+            if (conventionAware && !IConventionAware.class.isAssignableFrom(type)) {
+                visitor.mixInConventionAware();
             }
         }
     }
@@ -533,9 +564,9 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         }
 
         @Override
-        void applyTo(ClassGenerationVisitor builder) {
+        void applyTo(ClassGenerationVisitor visitor) {
             for (PropertyMetaData property : propertyTyped) {
-                builder.addPropertySetters(property, property.mainGetter);
+                visitor.addPropertySetters(property, property.mainGetter);
             }
         }
 
@@ -601,14 +632,14 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
         }
 
         @Override
-        public void applyTo(ClassGenerationVisitor builder) {
+        public void applyTo(ClassGenerationVisitor visitor) {
             for (PropertyMetaData property : serviceInjectionProperties) {
-                builder.addInjectorProperty(property);
+                visitor.addInjectorProperty(property);
                 for (Method getter : property.getOverridableGetters()) {
-                    builder.applyServiceInjectionToGetter(property, getter);
+                    visitor.applyServiceInjectionToGetter(property, getter);
                 }
                 for (Method setter : property.getOverridableSetters()) {
-                    builder.applyServiceInjectionToSetter(property, setter);
+                    visitor.applyServiceInjectionToSetter(property, setter);
                 }
             }
         }
@@ -621,21 +652,27 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
     protected interface ClassInspectionVisitor {
         void mixInExtensible();
 
+        void mixInConventionAware();
+
+        void providesOwnDynamicObjectImplementation();
+
         void mixInServiceInjection();
 
-        ClassGenerationVisitor builder(ClassMetaData classMetaData);
+        ClassGenerationVisitor builder();
     }
 
     protected interface ClassGenerationVisitor {
         void addConstructor(Constructor<?> constructor) throws Exception;
 
-        void mixInDynamicAware() throws Exception;
+        void mixInDynamicAware();
 
-        void mixInConventionAware() throws Exception;
+        void mixInConventionAware();
 
-        void mixInGroovyObject() throws Exception;
+        void mixInGroovyObject();
 
-        void addDynamicMethods() throws Exception;
+        void addDynamicMethods();
+
+        void addExtensionsProperty();
 
         void addInjectorProperty(PropertyMetaData property);
 
@@ -643,17 +680,17 @@ public abstract class AbstractClassGenerator implements ClassGenerator {
 
         void applyServiceInjectionToSetter(PropertyMetaData property, Method setter);
 
-        void addConventionProperty(PropertyMetaData property) throws Exception;
+        void addConventionProperty(PropertyMetaData property);
 
         void applyConventionMappingToGetter(PropertyMetaData property, Method getter) throws Exception;
 
-        void applyConventionMappingToSetter(PropertyMetaData property, Method setter) throws Exception;
+        void applyConventionMappingToSetter(PropertyMetaData property, Method setter);
 
-        void applyConventionMappingToSetMethod(PropertyMetaData property, Method metaMethod) throws Exception;
+        void applyConventionMappingToSetMethod(PropertyMetaData property, Method metaMethod);
 
-        void addSetMethod(PropertyMetaData propertyMetaData, Method setter) throws Exception;
+        void addSetMethod(PropertyMetaData propertyMetaData, Method setter);
 
-        void addActionMethod(Method method) throws Exception;
+        void addActionMethod(Method method);
 
         void addPropertySetters(PropertyMetaData property, Method getter);
 

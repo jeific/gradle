@@ -723,9 +723,12 @@ public class AsmBackedClassGeneratorTest {
     public void doesNotMixInExtensionAwareToClassWithAnnotation() throws Exception {
         NotExtensibleBean bean = newInstance(NotExtensibleBean.class);
         assertFalse(bean instanceof ExtensionContainer);
+        assertFalse(bean instanceof IConventionAware);
+        assertFalse(bean instanceof HasConvention);
 
         // Check dynamic object behaviour still works
         assertTrue(bean instanceof DynamicObjectAware);
+        assertTrue(bean instanceof GroovyObject);
     }
 
     @Test
@@ -734,8 +737,10 @@ public class AsmBackedClassGeneratorTest {
         assertFalse(bean instanceof IConventionAware);
         assertNull(bean.getInterfaceProperty());
 
-        // Check dynamic object behaviour still works
+        // Check other behaviour still works
+        assertTrue(bean instanceof ExtensionAware);
         assertTrue(bean instanceof DynamicObjectAware);
+        assertTrue(bean instanceof GroovyObject);
     }
 
     @Test
@@ -1675,6 +1680,25 @@ public class AsmBackedClassGeneratorTest {
         abstract T getTypedProp();
 
         final void setTypedProp(T t) {
+        }
+    }
+
+    public static abstract class AbstractBean {
+        String a;
+
+        public AbstractBean(String a) {
+            this.a = a;
+        }
+    }
+
+    public static class BeanWithServiceGetters {
+        String getCalculated() {
+            return "[" + getSomeValue() + "]";
+        }
+
+        @Inject
+        protected Number getSomeValue() {
+            throw new UnsupportedOperationException();
         }
     }
 
