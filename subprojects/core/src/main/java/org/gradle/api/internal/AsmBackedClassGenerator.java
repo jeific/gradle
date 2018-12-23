@@ -124,25 +124,59 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
     }
 
     @Override
-    protected <T> ClassBuilder<T> start(final Class<T> type, ClassMetaData classMetaData) {
-        if (!decorate && !classMetaData.isShouldImplementWithServiceRegistry() && !Modifier.isAbstract(type.getModifiers())) {
-            return new NoOpBuilder<T>(type);
-        }
-        int modifiers = type.getModifiers();
-        if (Modifier.isPrivate(modifiers)) {
-            throw new ClassGenerationException(String.format("Cannot create a decorated class for private class '%s'.",
-                    type.getSimpleName()));
-        }
-        if (Modifier.isFinal(modifiers)) {
-            throw new ClassGenerationException(String.format("Cannot create a decorated class for final class '%s'.",
-                type.getSimpleName()));
-        }
-        ClassBuilderImpl<T> builder = new ClassBuilderImpl<T>(type, classMetaData, decorate);
-        builder.startClass();
-        return builder;
+    protected ClassInspectionVisitor start(Class<?> type) {
+        return new ClassInspectionVisitorImpl(type, decorate);
     }
 
-    private static class ClassBuilderImpl<T> implements ClassBuilder<T> {
+    private static class ClassInspectionVisitorImpl implements ClassInspectionVisitor {
+        private final Class<?> type;
+        private final boolean decorate;
+        private boolean extensible;
+        private boolean serviceInjection;
+
+        public ClassInspectionVisitorImpl(Class<?> type, boolean decorate) {
+            this.type = type;
+            this.decorate = decorate;
+        }
+
+        @Override
+        public void mixInServiceInjection() {
+            serviceInjection = true;
+        }
+
+        @Override
+        public void mixInExtensible() {
+            if (decorate) {
+                extensible = true;
+            }
+        }
+
+        @Override
+        public ClassGenerationVisitor builder(ClassMetaData classMetaData) {
+            if (!decorate && !serviceInjection && !Modifier.isAbstract(type.getModifiers())) {
+                // Don't need to generate a subclass
+                return new NoOpBuilder(type);
+            }
+
+            int modifiers = type.getModifiers();
+            if (Modifier.isPrivate(modifiers)) {
+                throw new ClassGenerationException(String.format("Cannot create a decorated class for private class '%s'.",
+                        type.getSimpleName()));
+            }
+            if (Modifier.isFinal(modifiers)) {
+                throw new ClassGenerationException(String.format("Cannot create a decorated class for final class '%s'.",
+                    type.getSimpleName()));
+            }
+            ClassBuilderImpl builder = new ClassBuilderImpl(type, classMetaData, decorate, extensible, serviceInjection);
+            builder.startClass();
+            if (serviceInjection) {
+                builder.generateServiceRegistrySupportMethods();
+            }
+            return builder;
+        }
+    }
+
+    private static class ClassBuilderImpl implements ClassGenerationVisitor {
         public static final int PV_FINAL_STATIC = Opcodes.ACC_PRIVATE | ACC_STATIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC;
         private static final Set<? extends Class<?>> PRIMITIVE_TYPES = ImmutableSet.of(Byte.TYPE, Boolean.TYPE, Character.TYPE, Short.TYPE, Integer.TYPE, Long.TYPE, Float.TYPE, Double.TYPE);
         private static final String DYNAMIC_OBJECT_HELPER_FIELD = "__$dyn__";
@@ -205,7 +239,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
         private static final Type[] EMPTY_TYPES = new Type[0];
 
         private final ClassWriter visitor;
-        private final Class<T> type;
+        private final Class<?> type;
         private final Type generatedType;
         private final Type superclassType;
         private final Map<java.lang.reflect.Type, ReturnTypeEntry> genericReturnTypeConstantsIndex = Maps.newHashMap();
@@ -218,7 +252,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
         private final boolean providesOwnDynamicObject;
         private final boolean shouldImplementWithServices;
 
-        private ClassBuilderImpl(Class<T> type, ClassMetaData classMetaData, boolean decorated) {
+        private ClassBuilderImpl(Class<?> type, ClassMetaData classMetaData, boolean decorated, boolean extensible, boolean serviceInjection) {
             this.type = type;
 
             classGenerator = new AsmClassGenerator(type, "_Decorated");
@@ -226,11 +260,11 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             generatedType = classGenerator.getGeneratedType();
             superclassType = Type.getType(type);
             mixInDsl = decorated;
-            extensible = decorated && classMetaData.isExtensible();
+            this.extensible = extensible;
             conventionAware = decorated && classMetaData.isConventionAware();
             requiresInstantiator = !DynamicObjectAware.class.isAssignableFrom(type) && extensible;
             providesOwnDynamicObject = classMetaData.providesDynamicObjectImplementation();
-            shouldImplementWithServices = classMetaData.isShouldImplementWithServiceRegistry();
+            shouldImplementWithServices = serviceInjection;
         }
 
         public void startClass() {
@@ -1016,8 +1050,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             methodVisitor.visitEnd();
         }
 
-        @Override
-        public void generateServiceRegistrySupportMethods() {
+        void generateServiceRegistrySupportMethods() {
             generateServicesField();
             generateGetServices();
         }
@@ -1094,11 +1127,11 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
             }
         }
 
-        public Class<? extends T> generate() {
+        public Class<?> generate() {
             writeGenericReturnTypeFields();
             visitor.visitEnd();
 
-            return classGenerator.define().asSubclass(type);
+            return classGenerator.define();
         }
 
         private void writeGenericReturnTypeFields() {
@@ -1170,10 +1203,10 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
         }
     }
 
-    private static class NoOpBuilder<T> implements ClassBuilder<T> {
-        private final Class<T> type;
+    private static class NoOpBuilder implements ClassGenerationVisitor {
+        private final Class<?> type;
 
-        public NoOpBuilder(Class<T> type) {
+        public NoOpBuilder(Class<?> type) {
             this.type = type;
         }
 
@@ -1238,11 +1271,7 @@ public class AsmBackedClassGenerator extends AbstractClassGenerator {
         }
 
         @Override
-        public void generateServiceRegistrySupportMethods() {
-        }
-
-        @Override
-        public Class<? extends T> generate() {
+        public Class<?> generate() {
             return type;
         }
     }

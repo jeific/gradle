@@ -19,6 +19,7 @@ import groovy.lang.Closure;
 import groovy.lang.GroovyObject;
 import groovy.lang.MissingMethodException;
 import org.gradle.api.Action;
+import org.gradle.api.NonExtensible;
 import org.gradle.api.file.FileCollection;
 import org.gradle.api.internal.plugins.DslObject;
 import org.gradle.api.internal.provider.DefaultProviderFactory;
@@ -719,6 +720,15 @@ public class AsmBackedClassGeneratorTest {
     }
 
     @Test
+    public void doesNotMixInExtensionAwareToClassWithAnnotation() throws Exception {
+        NotExtensibleBean bean = newInstance(NotExtensibleBean.class);
+        assertFalse(bean instanceof ExtensionContainer);
+
+        // Check dynamic object behaviour still works
+        assertTrue(bean instanceof DynamicObjectAware);
+    }
+
+    @Test
     public void doesNotMixInConventionMappingToClassWithAnnotation() throws Exception {
         NoMappingBean bean = newInstance(NoMappingBean.class);
         assertFalse(bean instanceof IConventionAware);
@@ -998,8 +1008,8 @@ public class AsmBackedClassGeneratorTest {
         dynamicObject.setProperty("prop", providerFactory.provider(new Callable<String>() {
             int count;
             @Override
-            public String call() throws Exception {
-                return "[" + String.valueOf(++count) + "]";
+            public String call() {
+                return "[" + ++count + "]";
             }
         }));
         assertEquals("[1]", bean.getProp().get());
@@ -1019,8 +1029,8 @@ public class AsmBackedClassGeneratorTest {
         dynamicObject.setProperty("aProp", providerFactory.provider(new Callable<String>() {
             int count;
             @Override
-            public String call() throws Exception {
-                return "[" + String.valueOf(++count) + "]";
+            public String call() {
+                return "[" + ++count + "]";
             }
         }));
         assertEquals("[1]", bean.getaProp().get());
@@ -1043,12 +1053,22 @@ public class AsmBackedClassGeneratorTest {
         dynamicObject.setProperty("prop2", providerFactory.provider(new Callable<String>() {
             int count;
             @Override
-            public String call() throws Exception {
-                return "[" + String.valueOf(++count) + "]";
+            public String call() {
+                return "[" + ++count + "]";
             }
         }));
         assertEquals("[1]", bean.getProp2().get());
         assertEquals("[2]", bean.getProp2().get());
+    }
+
+    @Test
+    public void cannotAttachInjectAnnotationToPropertyWhoseTypeIsProperty() {
+        try {
+            generator.generate(InjectPropertyBean.class);
+            fail();
+        } catch (ClassGenerationException e) {
+            assertEquals("Cannot use @Inject annotation on method InjectPropertyBean.getProp().", e.getCause().getMessage());
+        }
     }
 
     public static class Bean {
@@ -1438,6 +1458,11 @@ public class AsmBackedClassGeneratorTest {
         String getInterfaceProperty();
     }
 
+    @NonExtensible
+    public static class NotExtensibleBean {
+
+    }
+
     @NoConventionMapping
     public static class NoMappingBean implements SomeType {
         public String getProperty() {
@@ -1630,6 +1655,13 @@ public class AsmBackedClassGeneratorTest {
 
         public Property<String> getaProp() {
             return aProp;
+        }
+    }
+
+    public static class InjectPropertyBean {
+        @Inject
+        public Property<String> getProp() {
+            throw new UnsupportedOperationException();
         }
     }
 
